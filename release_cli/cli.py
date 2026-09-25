@@ -1,6 +1,7 @@
 """Project-local release preparation with shared Git and GitHub operations."""
 
 import argparse
+from contextlib import contextmanager
 import json
 import os
 import re
@@ -11,11 +12,11 @@ import tomllib
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from .published import verify_published
+from .published import published_state, verify_published
 
 NS = {"m": "http://maven.apache.org/POM/4.0.0"}
 SEMVER = re.compile(r"\d+\.\d+\.\d+")
-TOOL_VERSION = "1.0.1"
+TOOL_VERSION = "1.0.2"
 
 
 def command(*args, cwd=None, capture=True, env=None):
@@ -95,11 +96,10 @@ def clean_tree(root):
 
 
 def existing_pr(root, repository, branch):
-    import json
-
     result = command(
         "gh", "pr", "list", "-R", repository, "--state", "open",
-        "--head", branch, "--json", "number,url,isDraft", cwd=root,
+        "--head", f"{repository.split('/')[0]}:{branch}",
+        "--json", "number,url,isDraft", cwd=root,
     )
     pulls = json.loads(result)
     return pulls[0] if pulls else None
@@ -107,6 +107,101 @@ def existing_pr(root, repository, branch):
 
 def remote_branch(root, branch):
     return bool(command("git", "ls-remote", "--heads", "origin", branch, cwd=root))
+
+
+@contextmanager
+def isolated_worktree(root, revision):
+    """Keep failed version-PR attempts out of the user's worktree."""
+    with tempfile.TemporaryDirectory(prefix="haunted-version-") as temporary:
+        work = Path(temporary) / "repo"
+        command("git", "worktree", "add", "--detach", str(work), revision,
+                cwd=root, capture=False)
+        try:
+            yield work
+        finally:
+            command("git", "worktree", "remove", "--force", str(work),
+                    cwd=root, capture=False)
+
+
+def prepared_paths(work, pom, target):
+    actual = version((work / pom).read_text())
+    if actual != target:
+        raise ValueError(f"Adapter produced {actual}, expected {target}")
+    command("git", "diff", "--check", cwd=work)
+    changed = [path for path in command("git", "diff", "--name-only", "-z",
+                                       cwd=work).split("\0") if path]
+    if not changed:
+        raise ValueError("Version adapter did not change tracked files")
+    untracked = command("git", "ls-files", "--others", "--exclude-standard", cwd=work)
+    if untracked:
+        raise ValueError(f"Version adapter created unexpected untracked files: {untracked}")
+    return changed
+
+
+def prepare(work, config, name, requested, pom, target):
+    script = work / config["project"].get("prepare", "tools/release/prepare-version.sh")
+    arguments = [str(script)]
+    if name != "default":
+        arguments.append(name)
+    arguments.append(requested)
+    command(*arguments, cwd=work, capture=False)
+    return prepared_paths(work, pom, target)
+
+
+def normalized_file(content):
+    # An existing prepared branch may have been created on an earlier day.
+    return re.sub(rb"(<project\.build\.outputTimestamp>)[^<]+(</project\.build\.outputTimestamp>)",
+                  rb"\1TIMESTAMP\2", content)
+
+
+def validate_remote_branch(root, work, branch, changed, pom, target):
+    command("git", "fetch", "origin",
+            f"refs/heads/{branch}:refs/remotes/origin/{branch}", cwd=root, capture=False)
+    revision = f"origin/{branch}"
+    base = command("git", "rev-parse", "origin/main", cwd=root)
+    if command("git", "merge-base", base, revision, cwd=root) != base:
+        raise ValueError(f"{branch} is behind main; update it before retrying")
+    remote_paths = [path for path in command(
+        "git", "diff", "--name-only", "-z", base, revision, cwd=root
+    ).split("\0") if path]
+    if set(remote_paths) != set(changed):
+        raise ValueError(f"{branch} differs from the expected version files")
+    for path in changed:
+        remote_file = subprocess.run(
+            ["git", "show", f"{revision}:{path}"], cwd=root, capture_output=True, check=True
+        ).stdout
+        if normalized_file(remote_file) != normalized_file((work / path).read_bytes()):
+            raise ValueError(f"{branch} contains an unexpected change to {path}")
+    if version(command("git", "show", f"{revision}:{pom}", cwd=root)) != target:
+        raise ValueError(f"{branch} has a different version")
+    return command("git", "rev-parse", revision, cwd=root)
+
+
+def local_status(root, repository, sha, state, detail):
+    command("gh", "api", "-X", "POST", f"repos/{repository}/statuses/{sha}",
+            "-f", f"state={state}", "-f", "context=hauntedmc/local-maven",
+            "-f", f"description={detail[:140]}", cwd=root)
+
+
+def verify_commit(root, work, repository, sha, verify, required, branch=None):
+    if not verify:
+        raise ValueError("Project has no local verification command")
+    if required:
+        local_status(root, repository, sha, "pending", "Local Maven verification is running")
+    try:
+        command(*verify, cwd=work, capture=False)
+        if branch:
+            remote = command("git", "ls-remote", "--heads", "origin", branch,
+                             cwd=root).split()
+            remote_sha = remote[0] if remote else None
+            if remote_sha != sha:
+                raise ValueError("Release branch changed during verification; retry")
+    except (RuntimeError, OSError, ValueError):
+        if required:
+            local_status(root, repository, sha, "failure", "Local Maven verification failed")
+        raise
+    if required:
+        local_status(root, repository, sha, "success", "Local Maven verification passed")
 
 
 def pr_title(config, target, name):
@@ -147,7 +242,7 @@ def version_command(args):
     current = version((root / pom).read_text())
     target = bump(current, args.version, config["project"].get("mode", "bump"))
     tag = part.get("tag_prefix", "v") + target
-    branch = "release/" + ("" if name == "default" else name + "-") + tag
+    branch = "release/" + tag
     print(f"{config['project']['name']}: {current} → {target} ({tag})", flush=True)
     if args.dry_run:
         return
@@ -167,54 +262,40 @@ def version_command(args):
     if args.pr and command("git", "ls-remote", "--tags", "origin", f"refs/tags/{tag}", cwd=root):
         raise ValueError(f"Remote release tag {tag} already exists")
     repository = config["project"]["repository"]
-    if args.pr:
-        prior = existing_pr(root, repository, branch)
-        if prior:
-            print(prior["url"])
-            return
-        if remote_branch(root, branch):
-            command("git", "fetch", "origin", branch, cwd=root, capture=False)
-            remote_xml = command("git", "show", f"FETCH_HEAD:{pom}", cwd=root)
-            if version(remote_xml) != target:
-                raise ValueError(f"Remote branch {branch} has a different version")
-            validation = "the existing prepared branch; check its previous validation"
-            print(create_pr(root, repository, branch, pr_title(config, target, name),
-                            pr_body(config, current, target, tag, validation)))
-            return
-        command("git", "switch", "-c", branch, cwd=root, capture=False)
-    prepare = root / config["project"].get("prepare", "tools/release/prepare-version.sh")
-    prepare_args = [str(prepare)]
-    if name != "default":
-        prepare_args.append(name)
-    prepare_args.append(args.version)
-    command(*prepare_args, cwd=root, capture=False)
-    actual = version((root / pom).read_text())
-    if actual != target:
-        raise ValueError(f"Adapter produced {actual}, expected {target}")
-    command("git", "diff", "--check", cwd=root)
-    changed = command("git", "diff", "--name-only", "-z", cwd=root).split("\0")
-    changed = [path for path in changed if path]
-    if not changed:
-        raise ValueError("Version adapter did not change tracked files")
-    untracked = command("git", "ls-files", "--others", "--exclude-standard", cwd=root)
-    if untracked:
-        raise ValueError(f"Version adapter created unexpected untracked files: {untracked}")
     if not args.pr:
+        prepare(root, config, name, args.version, pom, target)
         print("Version files prepared for review.")
         return
     verify = config["project"].get("verify", [])
     mandatory = config["project"].get("verify_before_pr", False)
-    validation = "repository PR CI"
-    if mandatory or args.verify:
-        if not verify:
-            raise ValueError("Project has no local verification command")
-        command(*verify, cwd=root, capture=False)
-        validation = f"`{' '.join(verify)}` passed locally on this branch"
-    command("git", "add", "--", *changed, cwd=root, capture=False)
-    command("git", "commit", "-m", pr_title(config, target, name), cwd=root, capture=False)
-    command("git", "push", "-u", "origin", branch, cwd=root, capture=False)
-    print(create_pr(root, repository, branch, pr_title(config, target, name),
-                    pr_body(config, current, target, tag, validation)))
+    should_verify = mandatory or args.verify
+    with isolated_worktree(root, "origin/main") as work:
+        changed = prepare(work, config, name, args.version, pom, target)
+        prior = existing_pr(root, repository, branch)
+        existing_remote = remote_branch(root, branch)
+        if existing_remote:
+            sha = validate_remote_branch(root, work, branch, changed, pom, target)
+            # Verify the actual pushed commit, not a newly prepared approximation.
+            command("git", "reset", "--hard", sha, cwd=work, capture=False)
+        elif prior:
+            raise ValueError(f"PR {prior['url']} has no matching remote branch")
+        else:
+            command("git", "add", "--", *changed, cwd=work, capture=False)
+            command("git", "commit", "-m", pr_title(config, target, name),
+                    cwd=work, capture=False)
+            sha = command("git", "rev-parse", "HEAD", cwd=work)
+        validation = "repository PR CI"
+        if not existing_remote:
+            command("git", "push", "origin", f"HEAD:refs/heads/{branch}",
+                    cwd=work, capture=False)
+        if should_verify:
+            verify_commit(root, work, repository, sha, verify, mandatory, branch)
+            validation = f"`{' '.join(verify)}` passed locally on commit `{sha}`"
+        if prior:
+            print(prior["url"])
+        else:
+            print(create_pr(root, repository, branch, pr_title(config, target, name),
+                            pr_body(config, current, target, tag, validation)))
 
 
 def gate_command(args):
@@ -283,8 +364,6 @@ def publish_pr_command(args):
 
 
 def verify_pr_command(args):
-    import json
-
     root = root_path()
     config = load_config(root)
     repository = config["project"]["repository"]
@@ -306,17 +385,26 @@ def verify_pr_command(args):
     command("git", "fetch", "origin", f"pull/{args.number}/head", cwd=root, capture=False)
     if command("git", "rev-parse", "FETCH_HEAD", cwd=root) != sha:
         raise ValueError("Fetched PR head differs from the GitHub PR head")
+    required = config["project"].get("verify_before_pr", False)
+    if required:
+        local_status(root, repository, sha, "pending", "Local Maven verification is running")
     with tempfile.TemporaryDirectory(prefix="haunted-verify-pr-") as temporary:
         work = Path(temporary) / "repo"
         command("git", "worktree", "add", "--detach", str(work), sha,
                 cwd=root, capture=False)
         try:
             command(*verify, cwd=work, capture=False)
+            if pull()["headRefOid"] != sha:
+                raise ValueError("PR head changed during verification; run it again")
+        except (RuntimeError, ValueError, OSError):
+            if required:
+                local_status(root, repository, sha, "failure", "Local Maven verification failed")
+            raise
         finally:
             command("git", "worktree", "remove", "--force", str(work),
                     cwd=root, capture=False)
-    if pull()["headRefOid"] != sha:
-        raise ValueError("PR head changed during verification; run it again")
+    if required:
+        local_status(root, repository, sha, "success", "Local Maven verification passed")
     body = f"Local Maven verification passed for `{sha}`: `{' '.join(verify)}`."
     command("gh", "pr", "comment", str(args.number), "-R", repository,
             "--body", body, cwd=root, capture=False)
@@ -345,6 +433,10 @@ def main():
     published.add_argument("--component")
     published.add_argument("--list", action="store_true")
     published.set_defaults(func=lambda args: verify_published(root_path(), load_config(root_path()), args))
+    state = sub.add_parser("published-state", help="Classify published coordinates before deploy")
+    state.add_argument("version")
+    state.add_argument("--component")
+    state.set_defaults(func=lambda args: published_state(root_path(), load_config(root_path()), args))
     publish = sub.add_parser("publish-pr", help="Open or refresh an automation PR")
     publish.add_argument("--branch", required=True)
     publish.add_argument("--title", required=True)
