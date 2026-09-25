@@ -16,7 +16,7 @@ from .published import published_state, verify_published
 
 NS = {"m": "http://maven.apache.org/POM/4.0.0"}
 SEMVER = re.compile(r"\d+\.\d+\.\d+")
-TOOL_VERSION = "1.0.2"
+TOOL_VERSION = "1.0.3"
 
 
 def command(*args, cwd=None, capture=True, env=None):
@@ -97,12 +97,15 @@ def clean_tree(root):
 
 def existing_pr(root, repository, branch):
     result = command(
-        "gh", "pr", "list", "-R", repository, "--state", "open",
-        "--head", f"{repository.split('/')[0]}:{branch}",
-        "--json", "number,url,isDraft", cwd=root,
+        "gh", "api",
+        f"repos/{repository}/pulls?state=open&head={repository.split('/')[0]}:{branch}&per_page=100",
+        cwd=root,
     )
     pulls = json.loads(result)
-    return pulls[0] if pulls else None
+    if not pulls:
+        return None
+    pull = pulls[0]
+    return {"number": pull["number"], "url": pull["html_url"], "isDraft": pull["draft"]}
 
 
 def remote_branch(root, branch):
