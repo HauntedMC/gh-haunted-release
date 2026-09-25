@@ -5,7 +5,7 @@ This public [GitHub CLI extension](https://cli.github.com/manual/gh_extension) p
 Install the version pinned by a project's `tools/release/project.toml`:
 
 ```sh
-gh extension install HauntedMC/gh-haunted-release --pin v1.0.0
+gh extension install HauntedMC/gh-haunted-release --pin v1.0.1
 ```
 
 From a project worktree, use `./tools/release/update-version patch` to prepare a diff, or append `--pr` to verify where required, commit, push, and open a reviewed PR. `--dry-run` prints the target without changing files. Theme adds `--component palette` or `--component adapter`; HauntedPlatform takes an exact semantic version.

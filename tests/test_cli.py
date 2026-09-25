@@ -1,10 +1,13 @@
 import os
+import json
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from release_cli.cli import bump, version
+from release_cli.cli import bump, publish_pr_command, version
 from release_cli.published import coordinates
 
 CLI = Path(__file__).resolve().parents[1] / "gh-haunted-release"
@@ -34,7 +37,7 @@ class VersionToolTest(unittest.TestCase):
             folder.mkdir(parents=True)
             (folder / "project.toml").write_text(
                 '[project]\nname="Example"\nrepository="HauntedMC/Example"\n'
-                'tool_version="1.0.0"\nprepare="tools/release/prepare-version.sh"\n'
+                'tool_version="1.0.1"\nprepare="tools/release/prepare-version.sh"\n'
                 '[components.default]\npom="pom.xml"\ntag_prefix="v"\n'
             )
             adapter = folder / "prepare-version.sh"
@@ -63,7 +66,7 @@ class VersionToolTest(unittest.TestCase):
             folder.mkdir(parents=True)
             (folder / "project.toml").write_text(
                 '[project]\nname="Example"\nrepository="HauntedMC/Example"\n'
-                'tool_version="1.0.0"\n'
+                'tool_version="1.0.1"\n'
                 '[components.default]\npom="pom.xml"\ntag_prefix="v"\n'
             )
             (root / "pom.xml").write_text(
@@ -99,7 +102,7 @@ class VersionToolTest(unittest.TestCase):
             folder.mkdir(parents=True)
             (folder / "project.toml").write_text(
                 '[project]\nname="Example"\nrepository="HauntedMC/Example"\n'
-                'tool_version="1.0.0"\nprepare="tools/release/prepare-version.sh"\n'
+                'tool_version="1.0.1"\nprepare="tools/release/prepare-version.sh"\n'
                 'verify_before_pr=true\nverify=["/bin/true"]\n'
                 '[components.default]\npom="pom.xml"\ntag_prefix="v"\n'
             )
@@ -152,6 +155,34 @@ class VersionToolTest(unittest.TestCase):
             self.assertEqual(coordinates(root, {"components": {"default": {"pom": "pom.xml"}},
                                                 "project": {}}, None),
                              [("nl.hauntedmc.example", "example", "jar")])
+
+    def test_refresh_existing_pr_uses_rest_body_update(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            body_file = root / "body.md"
+            body_file.write_text("Updated dependency versions.\n\nReady for review.\n")
+            calls = []
+
+            def fake_command(*args, **kwargs):
+                calls.append(args)
+                if args[:4] == ("gh", "api", "-X", "PATCH"):
+                    self.assertEqual(json.loads(Path(args[-1]).read_text()),
+                                     {"body": body_file.read_text()})
+                return ""
+
+            args = SimpleNamespace(branch="automation/internal-dependencies",
+                                   title="Update dependencies", body_file=str(body_file))
+            config = {"project": {"repository": "HauntedMC/Example"}}
+            prior = {"number": 7, "url": "https://github.com/HauntedMC/Example/pull/7",
+                     "isDraft": False}
+            with patch("release_cli.cli.root_path", return_value=root), \
+                 patch("release_cli.cli.load_config", return_value=config), \
+                 patch("release_cli.cli.remote_branch", return_value=False), \
+                 patch("release_cli.cli.existing_pr", return_value=prior), \
+                 patch("release_cli.cli.command", side_effect=fake_command):
+                publish_pr_command(args)
+            self.assertEqual(calls[-1][:6], ("gh", "api", "-X", "PATCH",
+                                              "repos/HauntedMC/Example/pulls/7", "--input"))
 
 
 if __name__ == "__main__":

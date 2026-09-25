@@ -1,6 +1,7 @@
 """Project-local release preparation with shared Git and GitHub operations."""
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -14,7 +15,7 @@ from .published import verify_published
 
 NS = {"m": "http://maven.apache.org/POM/4.0.0"}
 SEMVER = re.compile(r"\d+\.\d+\.\d+")
-TOOL_VERSION = "1.0.0"
+TOOL_VERSION = "1.0.1"
 
 
 def command(*args, cwd=None, capture=True, env=None):
@@ -266,11 +267,12 @@ def publish_pr_command(args):
     prior = existing_pr(root, repository, args.branch)
     body = Path(args.body_file).read_text()
     if prior:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".md") as stream:
-            stream.write(body)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".json") as stream:
+            json.dump({"body": body}, stream)
             stream.flush()
-            command("gh", "pr", "edit", str(prior["number"]), "-R", repository,
-                    "--body-file", stream.name, cwd=root, capture=False)
+            command("gh", "api", "-X", "PATCH",
+                    f"repos/{repository}/pulls/{prior['number']}",
+                    "--input", stream.name, cwd=root)
         if config["project"].get("verify_before_pr", False) and not prior["isDraft"]:
             command("gh", "pr", "ready", str(prior["number"]), "-R", repository,
                     "--undo", cwd=root, capture=False)
