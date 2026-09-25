@@ -1,0 +1,78 @@
+name: Bug report
+description: Report a problem with the release CLI
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Provide enough detail to reproduce the problem without exposing credentials or private repository data.
+  - type: checkboxes
+    id: precheck
+    attributes:
+      label: Pre-check
+      options:
+        - label: I searched existing issues and tested the latest release.
+          required: true
+        - label: I removed tokens, secrets, and private data from logs and snippets.
+          required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include the command, relevant project configuration, and the repository state when it ran.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: input
+    id: cli_version
+    attributes:
+      label: Release CLI version
+      description: Output of `gh haunted-release --version`.
+      placeholder: 1.0.1
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, Python version, and GitHub CLI version.
+      placeholder: Ubuntu 24.04; Python 3.12; gh 2.x
+    validations:
+      required: true
+  - type: dropdown
+    id: command
+    attributes:
+      label: Affected command
+      options:
+        - version
+        - verify-pr
+        - publish-pr
+        - gate
+        - verify-published
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output (optional)
+      description: Remove credentials and private data before pasting.
+      render: shell
