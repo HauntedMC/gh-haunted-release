@@ -5,7 +5,7 @@ This public [GitHub CLI extension](https://cli.github.com/manual/gh_extension) p
 Install the version pinned by a project's `tools/release/project.toml`:
 
 ```sh
-gh extension install HauntedMC/gh-haunted-release --pin v1.0.2
+gh extension install HauntedMC/gh-haunted-release --pin v1.0.3
 ```
 
 If an older pinned extension is installed, replace it with

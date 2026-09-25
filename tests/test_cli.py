@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from release_cli.cli import bump, publish_pr_command, version
+from release_cli.cli import bump, existing_pr, publish_pr_command, version
 from release_cli.published import coordinates, published_state
 
 CLI = Path(__file__).resolve().parents[1] / "gh-haunted-release"
@@ -37,7 +37,7 @@ class VersionToolTest(unittest.TestCase):
             folder.mkdir(parents=True)
             (folder / "project.toml").write_text(
                 '[project]\nname="Example"\nrepository="HauntedMC/Example"\n'
-                'tool_version="1.0.2"\nprepare="tools/release/prepare-version.sh"\n'
+                'tool_version="1.0.3"\nprepare="tools/release/prepare-version.sh"\n'
                 '[components.default]\npom="pom.xml"\ntag_prefix="v"\n'
             )
             adapter = folder / "prepare-version.sh"
@@ -66,7 +66,7 @@ class VersionToolTest(unittest.TestCase):
             folder.mkdir(parents=True)
             (folder / "project.toml").write_text(
                 '[project]\nname="Example"\nrepository="HauntedMC/Example"\n'
-                'tool_version="1.0.2"\n'
+                'tool_version="1.0.3"\n'
                 '[components.default]\npom="pom.xml"\ntag_prefix="v"\n'
             )
             (root / "pom.xml").write_text(
@@ -102,7 +102,7 @@ class VersionToolTest(unittest.TestCase):
             folder.mkdir(parents=True)
             (folder / "project.toml").write_text(
                 '[project]\nname="Example"\nrepository="HauntedMC/Example"\n'
-                'tool_version="1.0.2"\nprepare="tools/release/prepare-version.sh"\n'
+                'tool_version="1.0.3"\nprepare="tools/release/prepare-version.sh"\n'
                 'verify_before_pr=true\nverify=["/bin/true"]\n'
                 '[components.default]\npom="pom.xml"\ntag_prefix="v"\n'
             )
@@ -122,7 +122,7 @@ class VersionToolTest(unittest.TestCase):
             gh = fake / "gh"
             gh.write_text(
                 '#!/bin/sh\ncase "$1 $2" in\n'
-                '  "pr list") echo "[]" ;;\n'
+                '  "api repos/"*) echo "[]" ;;\n'
                 '  "pr create") echo "https://github.com/HauntedMC/Example/pull/1" ;;\n'
                 '  "api -X") printf "%s\\n" "$*" >> "$GH_TEST_LOG"; echo "{}" ;;\n'
                 '  *) exit 2 ;;\nesac\n'
@@ -197,6 +197,16 @@ class VersionToolTest(unittest.TestCase):
                         else:
                             published_state(root, config, args)
                     self.assertEqual(output.read_text().splitlines()[-1], f"state={expected}")
+
+    def test_existing_pr_filters_exact_owner_and_branch(self):
+        payload = json.dumps([{"number": 12, "html_url": "https://github.com/HauntedMC/Example/pull/12",
+                               "draft": True}])
+        with patch("release_cli.cli.command", return_value=payload) as gh:
+            pull = existing_pr(Path("/tmp/example"), "HauntedMC/Example", "release/v1.2.4")
+        self.assertEqual(pull, {"number": 12,
+                                "url": "https://github.com/HauntedMC/Example/pull/12",
+                                "isDraft": True})
+        self.assertIn("head=HauntedMC:release/v1.2.4", gh.call_args.args[2])
 
     def test_refresh_existing_pr_uses_rest_body_update(self):
         with tempfile.TemporaryDirectory() as temporary:
