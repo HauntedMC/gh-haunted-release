@@ -23,3 +23,16 @@ jobs:
         run: python3 -m unittest discover -s tests -v
       - name: Check extension entry point
         run: ./gh-haunted-release --version
+
+  ci-required:
+    name: ci-required
+    if: ${{ always() }}
+    needs: [test]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Require CLI tests
+        env:
+          TEST_RESULT: ${{ needs.test.result }}
+        run: test "$TEST_RESULT" = success
