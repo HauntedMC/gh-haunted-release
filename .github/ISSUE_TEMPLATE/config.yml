@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Support
+    url: https://www.hauntedmc.nl/support
+    about: Use support for help using the release tooling.
+  - name: Security report
+    url: https://github.com/HauntedMC/gh-haunted-release/security/advisories/new
+    about: Report vulnerabilities privately.

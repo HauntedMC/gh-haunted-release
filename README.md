@@ -15,3 +15,7 @@ From a project worktree, use `./tools/release/update-version patch` to prepare a
 The tool never merges a PR, deploys artifacts, or creates a release tag.
 
 See [the new repository guide](docs/new-repository.md) for the adapter contract and rollout checks.
+
+Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Report
+security issues privately through [SECURITY.md](SECURITY.md). The project uses
+the [AGPL-3.0 license](LICENSE) and follows the [Code of Conduct](CODE_OF_CONDUCT.md).

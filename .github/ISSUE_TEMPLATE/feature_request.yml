@@ -1,0 +1,50 @@
+name: Feature request
+description: Suggest a focused improvement to the release CLI
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: checkboxes
+    id: precheck
+    attributes:
+      label: Pre-check
+      options:
+        - label: I searched existing issues and discussions.
+          required: true
+        - label: This proposal is specific and actionable.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Which release or maintenance task is difficult today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior you want and how you would use it.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Version preparation and PRs
+        - Local PR verification
+        - Dependency update PRs
+        - Release gates and published artifacts
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility impact (optional)
+      description: Would consuming repositories need to change their configuration or scripts?
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered (optional)
