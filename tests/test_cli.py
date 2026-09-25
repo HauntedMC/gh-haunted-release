@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from release_cli.cli import bump, publish_pr_command, version
-from release_cli.published import coordinates
+from release_cli.published import coordinates, published_state
 
 CLI = Path(__file__).resolve().parents[1] / "gh-haunted-release"
 
@@ -37,7 +37,7 @@ class VersionToolTest(unittest.TestCase):
             folder.mkdir(parents=True)
             (folder / "project.toml").write_text(
                 '[project]\nname="Example"\nrepository="HauntedMC/Example"\n'
-                'tool_version="1.0.1"\nprepare="tools/release/prepare-version.sh"\n'
+                'tool_version="1.0.2"\nprepare="tools/release/prepare-version.sh"\n'
                 '[components.default]\npom="pom.xml"\ntag_prefix="v"\n'
             )
             adapter = folder / "prepare-version.sh"
@@ -66,7 +66,7 @@ class VersionToolTest(unittest.TestCase):
             folder.mkdir(parents=True)
             (folder / "project.toml").write_text(
                 '[project]\nname="Example"\nrepository="HauntedMC/Example"\n'
-                'tool_version="1.0.1"\n'
+                'tool_version="1.0.2"\n'
                 '[components.default]\npom="pom.xml"\ntag_prefix="v"\n'
             )
             (root / "pom.xml").write_text(
@@ -102,7 +102,7 @@ class VersionToolTest(unittest.TestCase):
             folder.mkdir(parents=True)
             (folder / "project.toml").write_text(
                 '[project]\nname="Example"\nrepository="HauntedMC/Example"\n'
-                'tool_version="1.0.1"\nprepare="tools/release/prepare-version.sh"\n'
+                'tool_version="1.0.2"\nprepare="tools/release/prepare-version.sh"\n'
                 'verify_before_pr=true\nverify=["/bin/true"]\n'
                 '[components.default]\npom="pom.xml"\ntag_prefix="v"\n'
             )
@@ -118,24 +118,35 @@ class VersionToolTest(unittest.TestCase):
             subprocess.run(["git", "-C", root, "push", "-q", "-u", "origin", "main"], check=True)
             fake = place / "bin"
             fake.mkdir()
+            status_log = place / "statuses"
             gh = fake / "gh"
             gh.write_text(
                 '#!/bin/sh\ncase "$1 $2" in\n'
                 '  "pr list") echo "[]" ;;\n'
                 '  "pr create") echo "https://github.com/HauntedMC/Example/pull/1" ;;\n'
+                '  "api -X") printf "%s\\n" "$*" >> "$GH_TEST_LOG"; echo "{}" ;;\n'
                 '  *) exit 2 ;;\nesac\n'
             )
             gh.chmod(0o755)
-            env = dict(os.environ, PATH=str(fake) + os.pathsep + os.environ["PATH"])
+            env = dict(os.environ, PATH=str(fake) + os.pathsep + os.environ["PATH"],
+                       GH_TEST_LOG=str(status_log))
             result = subprocess.run([CLI, "version", "patch", "--pr"], cwd=root,
                                     env=env, check=True, capture_output=True, text=True)
             self.assertIn("https://github.com/HauntedMC/Example/pull/1", result.stdout)
             self.assertEqual(subprocess.check_output(
                 ["git", "-C", root, "branch", "--show-current"], text=True
-            ).strip(), "release/v1.2.4")
+            ).strip(), "main")
             self.assertIn("refs/heads/release/v1.2.4", subprocess.check_output(
                 ["git", "--git-dir", bare, "show-ref"], text=True
             ))
+            self.assertIn("state=success", status_log.read_text())
+            # A pushed branch without a PR must be revalidated on retry.
+            subprocess.run([CLI, "version", "patch", "--pr"], cwd=root,
+                           env=env, check=True, capture_output=True, text=True)
+            self.assertEqual(status_log.read_text().count("state=success"), 2)
+            self.assertFalse(subprocess.check_output(
+                ["git", "-C", root, "status", "--porcelain"], text=True
+            ).strip())
 
     def test_coordinate_listing_excludes_acceptance(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -155,6 +166,37 @@ class VersionToolTest(unittest.TestCase):
             self.assertEqual(coordinates(root, {"components": {"default": {"pom": "pom.xml"}},
                                                 "project": {}}, None),
                              [("nl.hauntedmc.example", "example", "jar")])
+
+    def test_publication_preflight_classifies_all_none_and_partial(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "pom.xml").write_text(
+                '<project xmlns="http://maven.apache.org/POM/4.0.0">'
+                '<groupId>nl.hauntedmc</groupId><artifactId>root</artifactId>'
+                '<modules><module>child</module></modules></project>'
+            )
+            child = root / "child"
+            child.mkdir()
+            (child / "pom.xml").write_text(
+                '<project xmlns="http://maven.apache.org/POM/4.0.0">'
+                '<groupId>nl.hauntedmc</groupId><artifactId>child</artifactId></project>'
+            )
+            config = {"components": {"default": {"pom": "pom.xml"}},
+                      "project": {"repository": "HauntedMC/Example"}}
+            args = SimpleNamespace(version="1.2.4", component=None)
+            output = root / "output"
+            with patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}):
+                for codes, expected in [([1, 1], "none"), ([0, 0], "complete"),
+                                        ([0, 1], "partial")]:
+                    with patch("release_cli.published.subprocess.run",
+                               side_effect=[SimpleNamespace(returncode=code)
+                                            for code in codes]):
+                        if expected == "partial":
+                            with self.assertRaisesRegex(RuntimeError, "Partial Maven publication"):
+                                published_state(root, config, args)
+                        else:
+                            published_state(root, config, args)
+                    self.assertEqual(output.read_text().splitlines()[-1], f"state={expected}")
 
     def test_refresh_existing_pr_uses_rest_body_update(self):
         with tempfile.TemporaryDirectory() as temporary:
