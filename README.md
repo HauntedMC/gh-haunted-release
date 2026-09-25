@@ -13,3 +13,5 @@ From a project worktree, use `./tools/release/update-version patch` to prepare a
 `gh haunted-release verify-pr NUMBER` locally verifies a draft PR at its exact head commit and marks it ready only if the head has not changed. The `gate`, `verify-published`, and `publish-pr` commands are used by repository workflows and HauntedPlatform's dependency reconciler.
 
 The tool never merges a PR, deploys artifacts, or creates a release tag.
+
+See [the new repository guide](docs/new-repository.md) for the adapter contract and rollout checks.
