@@ -8,8 +8,8 @@ Install the version pinned by a project's `tools/release/project.toml`:
 gh extension install HauntedMC/gh-haunted-release --pin v1.0.2
 ```
 
-If the extension is already installed, upgrade to the project's pinned version with
-`gh extension install HauntedMC/gh-haunted-release --pin v1.0.2 --force`.
+If an older pinned extension is installed, replace it with
+`gh extension remove haunted-release` followed by the install command above.
 Run `gh haunted-release --version` to confirm the installed version.
 
 From a clean, current `main` worktree, run `./tools/release/update-version patch --pr`
